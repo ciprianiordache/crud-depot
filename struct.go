@@ -15,6 +15,7 @@ type fieldMeta struct {
 	column     string
 	index      int
 	primaryKey bool
+	autoGen    bool // DB generates the value (serial, uuid, etc.) — skip on INSERT
 }
 
 type modelMeta struct {

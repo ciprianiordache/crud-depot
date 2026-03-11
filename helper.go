@@ -20,9 +20,20 @@ func parseColumn(tag string) string {
 
 // isPrimaryKey checks if the db tag contains "primary_key".
 func isPrimaryKey(tag string) bool {
+	return hasOption(tag, "primary_key")
+}
+
+// isAutoGen returns true if the DB generates this value automatically.
+// Covers: auto (SERIAL / AUTO_INCREMENT) and uuid (gen_random_uuid()).
+// Both mean: skip on INSERT, let DB fill the value.
+func isAutoGen(tag string) bool {
+	return hasOption(tag, "auto") || hasOption(tag, "uuid")
+}
+
+func hasOption(tag, option string) bool {
 	parts := strings.Split(tag, ",")
 	for _, p := range parts[1:] {
-		if strings.TrimSpace(p) == "primary_key" {
+		if strings.TrimSpace(p) == option {
 			return true
 		}
 	}
