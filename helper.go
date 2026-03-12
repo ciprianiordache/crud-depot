@@ -1,6 +1,7 @@
 package crud
 
 import (
+	"crypto/rand"
 	"database/sql"
 	"fmt"
 	"reflect"
@@ -177,4 +178,23 @@ func scanRows(rows *sql.Rows, dest any) error {
 	}
 
 	return rows.Err()
+}
+
+// generateUUID generates a random UUID v4 using crypto/rand.
+// Format: xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx
+func generateUUID() (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("crud-depot: generate uuid: %w", err)
+	}
+
+	// set version 4
+	b[6] = (b[6] & 0x0f) | 0x40
+	// set variant bits (10xx)
+	b[8] = (b[8] & 0x3f) | 0x80
+
+	return fmt.Sprintf(
+		"%08x-%04x-%04x-%04x-%012x",
+		b[0:4], b[4:6], b[6:8], b[8:10], b[10:],
+	), nil
 }

@@ -15,7 +15,8 @@ type fieldMeta struct {
 	column     string
 	index      int
 	primaryKey bool
-	autoGen    bool   // uuid/auto — skip on INSERT, DB generates
+	autoGen    bool   // auto (SERIAL/AUTO_INCREMENT) — skip on INSERT, DB generates
+	uuidGen    bool   // uuid — crud-depot generates UUID before INSERT
 	defaultVal string // default:X — applied at Create if field is zero
 	onCreate   bool   // oncreate — set time.Now() at Create
 	onWrite    bool   // onwrite  — set time.Now() at Create and Update

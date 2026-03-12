@@ -90,20 +90,29 @@ func (c *CRUD) Create(model any) (string, error) {
 	val := reflect.ValueOf(model).Elem()
 	now := time.Now()
 
+	// apply all tag-driven values before building the query
 	for _, f := range meta.fields {
-		if f.autoGen {
-			continue
-		}
 		field := val.Field(f.index)
 
-		// oncreate and onwrite — set time.Now()
-		if f.onCreate || f.onWrite {
-			setTime(field, now)
+		switch {
+		case f.autoGen:
+			// SERIAL / AUTO_INCREMENT — DB generates, skip entirely
 			continue
-		}
 
-		// default:X — set if field is zero value
-		if f.defaultVal != "" {
+		case f.uuidGen:
+			// uuid — crud-depot generates, set on the struct before INSERT
+			if field.Kind() == reflect.String && field.IsZero() {
+				id, err := generateUUID()
+				if err != nil {
+					return "", err
+				}
+				field.SetString(id)
+			}
+
+		case f.onCreate || f.onWrite:
+			setTime(field, now)
+
+		case f.defaultVal != "":
 			applyDefault(field, f.defaultVal)
 		}
 	}
@@ -112,6 +121,7 @@ func (c *CRUD) Create(model any) (string, error) {
 	var args []any
 
 	for _, f := range meta.fields {
+		// skip only SERIAL/AUTO_INCREMENT — uuid fields are now included with their generated value
 		if f.autoGen {
 			continue
 		}
@@ -125,31 +135,52 @@ func (c *CRUD) Create(model any) (string, error) {
 		pkCol = meta.primaryKey.column
 	}
 
+	// for uuid PKs we don't need RETURNING — we already know the ID
+	returning := ""
+	if meta.primaryKey != nil && meta.primaryKey.autoGen {
+		returning = c.dialect.ReturningClause(pkCol)
+	}
+
 	query := strings.TrimSpace(fmt.Sprintf(
 		"INSERT INTO %s (%s) VALUES (%s) %s",
 		table,
 		strings.Join(cols, ", "),
 		strings.Join(placeholders, ", "),
-		c.dialect.ReturningClause(pkCol),
+		returning,
 	))
 
-	if c.dialect.UsesLastInsertID() {
-		result, err := c.db.Exec(query, args...)
-		if err != nil {
+	// auto-increment path — DB generates the ID
+	if meta.primaryKey != nil && meta.primaryKey.autoGen {
+		if c.dialect.UsesLastInsertID() {
+			result, err := c.db.Exec(query, args...)
+			if err != nil {
+				return "", opErr("Create", table, err)
+			}
+			id, err := result.LastInsertId()
+			if err != nil {
+				return "", opErr("Create", table, err)
+			}
+			return fmt.Sprintf("%d", id), nil
+		}
+
+		var id string
+		if err = c.db.QueryRow(query, args...).Scan(&id); err != nil {
 			return "", opErr("Create", table, err)
 		}
-		id, err := result.LastInsertId()
-		if err != nil {
-			return "", opErr("Create", table, err)
-		}
-		return fmt.Sprintf("%d", id), nil
+		return id, nil
 	}
 
-	var id string
-	if err = c.db.QueryRow(query, args...).Scan(&id); err != nil {
+	// uuid path — crud-depot generated the ID, just execute and return it
+	if _, err = c.db.Exec(query, args...); err != nil {
 		return "", opErr("Create", table, err)
 	}
-	return id, nil
+
+	// return the UUID we set on the struct
+	if meta.primaryKey != nil {
+		return val.Field(meta.primaryKey.index).String(), nil
+	}
+
+	return "", nil
 }
 
 func (c *CRUD) Update(model any, whereField string, whereValue any) error {
@@ -161,7 +192,6 @@ func (c *CRUD) Update(model any, whereField string, whereValue any) error {
 	meta := getMeta(model)
 	val := reflect.ValueOf(model).Elem()
 
-	// update onwrite fields
 	now := time.Now()
 	for _, f := range meta.fields {
 		if f.onWrite {
@@ -173,7 +203,7 @@ func (c *CRUD) Update(model any, whereField string, whereValue any) error {
 	var args []any
 
 	for _, f := range meta.fields {
-		if f.primaryKey || f.autoGen {
+		if f.primaryKey || f.autoGen || f.uuidGen {
 			continue
 		}
 		args = append(args, val.Field(f.index).Interface())
@@ -307,7 +337,8 @@ func buildMeta(t reflect.Type) *modelMeta {
 			column:     col,
 			index:      i,
 			primaryKey: isPrimaryKey(rawTag),
-			autoGen:    isAutoGen(rawTag) || isPrimaryKey(rawTag),
+			autoGen:    hasOption(rawTag, "auto"), // SERIAL/AUTO_INCREMENT — DB generates
+			uuidGen:    hasOption(rawTag, "uuid"), // UUID — crud-depot generates
 			defaultVal: getDefault(rawTag),
 			onCreate:   hasOption(rawTag, "oncreate"),
 			onWrite:    hasOption(rawTag, "onwrite"),
