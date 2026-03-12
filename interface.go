@@ -1,20 +1,15 @@
 package crud
 
-import (
-	"database/sql"
-	"time"
-)
+import "database/sql"
 
-// Executor is implemented by *sql.DB and *sql.Tx - allows
-// the same CRUD instance to work inside or outside a transaction.
+// Executor is implemented by *sql.DB and *sql.Tx.
 type Executor interface {
 	Query(query string, args ...any) (*sql.Rows, error)
 	QueryRow(query string, args ...any) *sql.Row
 	Exec(query string, args ...any) (sql.Result, error)
 }
 
-// TxBeginner is implemented by *sql.DB and allows crud-depot
-// to begin a transaction internally via RunInTx.
+// TxBeginner is implemented by *sql.DB — used by RunInTx.
 type TxBeginner interface {
 	Executor
 	Begin() (*sql.Tx, error)
@@ -22,31 +17,20 @@ type TxBeginner interface {
 
 type Dialect interface {
 	Placeholder(n int) string
-	ReturningClause(col string) string // Postgres: "RETURNING id" | MySQL/SQLite: ""
-	UsesLastInsertID() bool            // MySQL/SQLite: true | Postgres: false
+	ReturningClause(col string) string
+	UsesLastInsertID() bool
 }
 
-// TableNamer — model provide its own table name.
+// TableNamer — model provides its own table name.
 //
-// func (User) TableName() string { return "users" }
+//	func (User) TableName() string { return "users" }
 type TableNamer interface {
 	TableName() string
 }
 
-// Timestamped — model wants automatic created_at / updated_at management.
-// crud-depot will call these before Create and Update
+// SoftDeleter — model uses soft delete instead of physical DELETE.
 //
-// func (u *User) SetCreatedAt(t time.Time) { u.CreatedAt = t }
-// func (u *User) SetUpdatedAt(t time.Time) { u.UpdatedAt = t }
-type Timestamped interface {
-	SetCreatedAt(t time.Time)
-	SetUpdatedAt(t time.Time)
-}
-
-// SoftDeleter — model wants soft delete instead of physical DELETE.
-// crud-depot will issue UPDATE <table> SET <fuekd> = NOW() instead of DELETE.
-//
-// func (User) SoftDeleteField() stirng { return "deleted_at" }
+//	func (User) SoftDeleteField() string { return "deleted_at" }
 type SoftDeleter interface {
 	SoftDeleteField() string
 }

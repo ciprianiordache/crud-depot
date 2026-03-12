@@ -4,13 +4,12 @@ import (
 	"database/sql"
 	"fmt"
 	"reflect"
+	"strconv"
 	"strings"
+	"time"
 	"unicode"
 )
 
-// parseColumn extracts the column name from a db tag.
-// "email,notnull,unique" → "email"
-// ""                     → ""
 func parseColumn(tag string) string {
 	if tag == "" {
 		return ""
@@ -18,16 +17,17 @@ func parseColumn(tag string) string {
 	return strings.Split(tag, ",")[0]
 }
 
-// isPrimaryKey checks if the db tag contains "primary_key".
-func isPrimaryKey(tag string) bool {
-	return hasOption(tag, "primary_key")
-}
+func isPrimaryKey(tag string) bool { return hasOption(tag, "primary_key") }
+func isAutoGen(tag string) bool    { return hasOption(tag, "auto") || hasOption(tag, "uuid") }
 
-// isAutoGen returns true if the DB generates this value automatically.
-// Covers: auto (SERIAL / AUTO_INCREMENT) and uuid (gen_random_uuid()).
-// Both mean: skip on INSERT, let DB fill the value.
-func isAutoGen(tag string) bool {
-	return hasOption(tag, "auto") || hasOption(tag, "uuid")
+func getDefault(tag string) string {
+	parts := strings.Split(tag, ",")
+	for _, p := range parts[1:] {
+		if strings.HasPrefix(p, "default:") {
+			return strings.TrimPrefix(p, "default:")
+		}
+	}
+	return ""
 }
 
 func hasOption(tag, option string) bool {
@@ -40,10 +40,42 @@ func hasOption(tag, option string) bool {
 	return false
 }
 
-// toSnakeCase converts a Go field name to snake_case.
-// "UserID"    → "user_id"
-// "CreatedAt" → "created_at"
-// "Name"      → "name"
+// applyDefault sets the field to the parsed default value
+// only if the field is currently a zero value.
+func applyDefault(f reflect.Value, raw string) {
+	if !f.CanSet() || !f.IsZero() {
+		return
+	}
+
+	switch f.Kind() {
+	case reflect.String:
+		f.SetString(raw)
+	case reflect.Bool:
+		if v, err := strconv.ParseBool(raw); err == nil {
+			f.SetBool(v)
+		}
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		if v, err := strconv.ParseInt(raw, 10, 64); err == nil {
+			f.SetInt(v)
+		}
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		if v, err := strconv.ParseUint(raw, 10, 64); err == nil {
+			f.SetUint(v)
+		}
+	case reflect.Float32, reflect.Float64:
+		if v, err := strconv.ParseFloat(raw, 64); err == nil {
+			f.SetFloat(v)
+		}
+	}
+}
+
+// setTime sets a time.Time field to now, only if the field is settable.
+func setTime(f reflect.Value, now time.Time) {
+	if f.CanSet() && f.Type() == reflect.TypeOf(time.Time{}) {
+		f.Set(reflect.ValueOf(now))
+	}
+}
+
 func toSnakeCase(s string) string {
 	var b strings.Builder
 	runes := []rune(s)
@@ -66,8 +98,6 @@ func toSnakeCase(s string) string {
 	return b.String()
 }
 
-// getTableName resolves the table name from a model.
-// Returns ErrNoTableName if the model doesn't implement TableNamer.
 func getTableName(model any) (string, error) {
 	if t, ok := model.(TableNamer); ok {
 		return t.TableName(), nil

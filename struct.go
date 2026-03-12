@@ -15,7 +15,10 @@ type fieldMeta struct {
 	column     string
 	index      int
 	primaryKey bool
-	autoGen    bool // DB generates the value (serial, uuid, etc.) — skip on INSERT
+	autoGen    bool   // uuid/auto — skip on INSERT, DB generates
+	defaultVal string // default:X — applied at Create if field is zero
+	onCreate   bool   // oncreate — set time.Now() at Create
+	onWrite    bool   // onwrite  — set time.Now() at Create and Update
 }
 
 type modelMeta struct {
