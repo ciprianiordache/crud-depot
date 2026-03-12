@@ -127,7 +127,7 @@ id, err := depot.Create(user)
 
 Before INSERT, crud-depot applies all tag-driven defaults:
 
-- `uuid` → ID is skipped, DB or application generates it
+- `uuid` → ID is generated, CRUD Depot generates it.
 - `default:operator` → Role is set to `"operator"` if zero
 - `default:false` → Active is set to `false` if zero  
 - `oncreate` → CreatedAt is set to `time.Now()`
