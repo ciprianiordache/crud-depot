@@ -150,6 +150,26 @@ err := depot.Read(
 
 ---
 
+### ReadOne
+
+Returns a single record. Returns `ErrNotFound` if no row matches — no need to check for empty slices.
+
+```go
+var user model.User
+
+err := depot.ReadOne(
+    model.User{},
+    "email",
+    "ion@example.com",
+    &user,
+)
+if errors.Is(err, crud.ErrNotFound) {
+    // user does not exist
+}
+```
+
+---
+
 ### Get (pagination)
 
 ```go
@@ -325,6 +345,9 @@ if err != nil {
     // check sentinel errors
     if errors.Is(err, crud.ErrNoTableName) {
         log.Println("model does not implement TableName()")
+    }
+    if errors.Is(err, crud.ErrNotFound) {
+        log.Println("record not found")
     }
 }
 ```
