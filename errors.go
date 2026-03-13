@@ -11,6 +11,9 @@ var ErrNoTableName = errors.New("crud-depot: model does not implement TableNamer
 // ErrInvalidDest is returned when the dest argument is not a pointer to a slice.
 var ErrInvalidDest = errors.New("crud-depot: dest must be a pointer to a slice")
 
+// ErrNotFound is returned by ReadOne when no row matches the query.
+var ErrNotFound = errors.New("crud-depot: record not found")
+
 // OpError wraps an underlying SQL error with operation context.
 type OpError struct {
 	Op    string // "Create", "Read", "Update", "Delete", "Get"

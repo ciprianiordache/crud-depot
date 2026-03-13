@@ -220,9 +220,16 @@ func (c *CRUD) Update(model any, whereField string, whereValue any) error {
 		c.dialect.Placeholder(len(args)),
 	)
 
-	if _, err = c.db.Exec(query, args...); err != nil {
+	result, err := c.db.Exec(query, args...)
+	if err != nil {
 		return opErr("Update", table, err)
 	}
+
+	n, err := result.RowsAffected()
+	if err == nil && n == 0 {
+		return ErrNotFound
+	}
+
 	return nil
 }
 
@@ -246,6 +253,62 @@ func (c *CRUD) Read(model any, field string, value any, dest any) error {
 	if err = scanRows(rows, dest); err != nil {
 		return opErr("Read", table, err)
 	}
+
+	// check if any rows were returned
+	destVal := reflect.ValueOf(dest).Elem()
+	if destVal.Kind() == reflect.Slice && destVal.Len() == 0 {
+		return ErrNotFound
+	}
+
+	return nil
+}
+
+// ReadOne returns a single record matching field = value.
+// Returns ErrNotFound if no row matches.
+//
+// Example:
+//
+//	var user model.User
+//	err := depot.ReadOne(model.User{}, "email", "ion@example.com", &user)
+//	if errors.Is(err, crud.ErrNotFound) {
+//	    // user does not exist
+//	}
+func (c *CRUD) ReadOne(model any, field string, value any, dest any) error {
+	table, err := getTableName(model)
+	if err != nil {
+		return err
+	}
+
+	query := fmt.Sprintf(
+		"SELECT * FROM %s WHERE %s = %s LIMIT 1",
+		table, field, c.dialect.Placeholder(1),
+	)
+
+	rows, err := c.db.Query(query, value)
+	if err != nil {
+		return opErr("ReadOne", table, err)
+	}
+	defer rows.Close()
+
+	// scan into a temporary slice then extract the first element
+	val := reflect.ValueOf(dest)
+	if val.Kind() != reflect.Ptr {
+		return opErr("ReadOne", table, fmt.Errorf("dest must be a pointer to a struct"))
+	}
+
+	elemType := val.Elem().Type()
+	slicePtr := reflect.New(reflect.SliceOf(elemType))
+
+	if err = scanRows(rows, slicePtr.Interface()); err != nil {
+		return opErr("ReadOne", table, err)
+	}
+
+	slice := slicePtr.Elem()
+	if slice.Len() == 0 {
+		return ErrNotFound
+	}
+
+	val.Elem().Set(slice.Index(0))
 	return nil
 }
 
@@ -289,8 +352,13 @@ func (c *CRUD) Delete(model any, field string, value any) error {
 			field,
 			c.dialect.Placeholder(2),
 		)
-		if _, err = c.db.Exec(query, time.Now(), value); err != nil {
+		result, err := c.db.Exec(query, time.Now(), value)
+		if err != nil {
 			return opErr("Delete(soft)", table, err)
+		}
+		n, err := result.RowsAffected()
+		if err == nil && n == 0 {
+			return ErrNotFound
 		}
 		return nil
 	}
@@ -300,8 +368,13 @@ func (c *CRUD) Delete(model any, field string, value any) error {
 		table, field, c.dialect.Placeholder(1),
 	)
 
-	if _, err = c.db.Exec(query, value); err != nil {
+	result, err := c.db.Exec(query, value)
+	if err != nil {
 		return opErr("Delete", table, err)
+	}
+	n, err := result.RowsAffected()
+	if err == nil && n == 0 {
+		return ErrNotFound
 	}
 	return nil
 }
