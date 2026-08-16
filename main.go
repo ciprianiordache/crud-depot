@@ -125,7 +125,7 @@ func (c *CRUD) Create(model any) (string, error) {
 		if f.autoGen {
 			continue
 		}
-		cols = append(cols, f.column)
+		cols = append(cols, fmt.Sprintf("%q", f.column))
 		args = append(args, val.Field(f.index).Interface())
 		placeholders = append(placeholders, c.dialect.Placeholder(len(args)))
 	}
@@ -400,6 +400,12 @@ func buildMeta(t reflect.Type) *modelMeta {
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
 		rawTag := field.Tag.Get("db")
+		// db:"-" marks a field as non-persistent (e.g. manually populated
+		// nested slices like DayVariants []DayVariant). It must never be
+		// included in INSERT/UPDATE, same convention as encoding/json.
+		if rawTag == "-" {
+			continue
+		}
 
 		col := parseColumn(rawTag)
 		if col == "" {
