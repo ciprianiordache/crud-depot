@@ -207,7 +207,7 @@ func (c *CRUD) Update(model any, whereField string, whereValue any) error {
 			continue
 		}
 		args = append(args, val.Field(f.index).Interface())
-		sets = append(sets, fmt.Sprintf("%s = %s", f.column, c.dialect.Placeholder(len(args))))
+		sets = append(sets, fmt.Sprintf("%q = %s", f.column, c.dialect.Placeholder(len(args))))
 	}
 
 	args = append(args, whereValue)
