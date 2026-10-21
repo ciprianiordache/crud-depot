@@ -125,19 +125,17 @@ func (r mockResult) RowsAffected() (int64, error) { return r.rows, nil }
 // ── Test models ───────────────────────────────────────────────────────────────
 
 type User struct {
-	ID        string     `db:"id,primary_key"`
+	ID        string     `db:"id,primary_key,auto"`
 	Name      string     `db:"name,notnull"`
 	Email     string     `db:"email,notnull,unique"`
 	Active    bool       `db:"active"`
 	DeletedAt *time.Time `db:"deleted_at"`
-	CreatedAt time.Time  `db:"created_at"`
-	UpdatedAt time.Time  `db:"updated_at"`
+	CreatedAt time.Time  `db:"created_at,oncreate"`
+	UpdatedAt time.Time  `db:"updated_at,onwrite"`
 }
 
-func (User) TableName() string           { return "users" }
-func (u *User) SetCreatedAt(t time.Time) { u.CreatedAt = t }
-func (u *User) SetUpdatedAt(t time.Time) { u.UpdatedAt = t }
-func (User) SoftDeleteField() string     { return "deleted_at" }
+func (User) TableName() string       { return "users" }
+func (User) SoftDeleteField() string { return "deleted_at" }
 
 // NoTableModel — does not implement TableNamer
 type NoTableModel struct {

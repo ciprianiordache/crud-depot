@@ -116,6 +116,9 @@ func getTableName(model any) (string, error) {
 	)
 }
 
+// scannerType is used to detect fields that scan themselves.
+var scannerType = reflect.TypeFor[sql.Scanner]()
+
 func scanRows(rows *sql.Rows, dest any) error {
 	val := reflect.ValueOf(dest)
 	if val.Kind() != reflect.Ptr || val.Elem().Kind() != reflect.Slice {
@@ -147,8 +150,22 @@ func scanRows(rows *sql.Rows, dest any) error {
 
 		values := make([]any, len(columns))
 		ptrs := make([]any, len(columns))
-		for i := range values {
+		direct := make([]bool, len(columns))
+		for i, col := range columns {
 			ptrs[i] = &values[i]
+			// Pointer fields (*string, *int64, *time.Time, ...) and
+			// sql.Scanner types (sql.NullString, ...) are scanned straight
+			// into the field: database/sql then sets a pointer to nil for
+			// NULL and allocates it otherwise, and lets a Scanner do its own
+			// conversion. Plain fields keep the generic path below, so a
+			// NULL still leaves them at their zero value.
+			if fieldIdx, ok := colIndex[col]; ok {
+				f := elem.Field(fieldIdx)
+				if f.CanSet() && (f.Kind() == reflect.Pointer || f.Addr().Type().Implements(scannerType)) {
+					ptrs[i] = f.Addr().Interface()
+					direct[i] = true
+				}
+			}
 		}
 
 		if err := rows.Scan(ptrs...); err != nil {
@@ -156,6 +173,9 @@ func scanRows(rows *sql.Rows, dest any) error {
 		}
 
 		for j, col := range columns {
+			if direct[j] {
+				continue
+			}
 			fieldIdx, ok := colIndex[col]
 			if !ok {
 				continue

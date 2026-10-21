@@ -45,7 +45,10 @@ This library removes that boilerplate while **still letting you control your SQL
 ## Features
 
 - Simple CRUD operations
+- `context.Context` variants of every operation (`CreateContext`, `ReadOneContext`, ...)
+- Multi-column `WHERE` (`crud.Eq("organization_id", org).And("id", id)`) for tenant-safe access
 - Supports `*sql.DB` and `*sql.Tx`
+- Reads nullable columns into pointer fields (`*string`, `*int64`, `*time.Time`) and `sql.Scanner` types
 - Multiple SQL dialects (Postgres, MySQL, SQLite)
 - Struct → column mapping via `db` tags
 - Metadata caching for performance (reflection runs once per type)
@@ -212,6 +215,41 @@ err := depot.Delete(
 ```
 
 If the model implements `SoftDeleter`, `Delete` issues an `UPDATE` instead of `DELETE`.
+
+---
+
+### Context and multi-column WHERE
+
+Every operation has a `...Context` variant. `Read`, `ReadOne`, `Update` and
+`Delete` take a `crud.Where` instead of one field and value: conditions are
+joined with `AND`, in order, and a `nil` value means `IS NULL`.
+
+```go
+where := crud.Eq("organization_id", orgID).And("id", unitID)
+
+var u model.Unit
+err := depot.ReadOneContext(ctx, model.Unit{}, where, &u)
+
+u.Status = "diagnosed"
+err = depot.UpdateContext(ctx, &u, where)
+// UPDATE units SET ... WHERE organization_id = $14 AND id = $15
+
+err = depot.DeleteContext(ctx, model.Unit{}, where)
+err = depot.RunInTxContext(ctx, db, func(tx *crud.CRUD) error { ... })
+```
+
+In a multi-tenant schema this is what keeps one tenant's request from
+touching another's rows: `Update(unit, "id", id)` would match any
+organization's unit with that id.
+
+An empty `Where` returns `ErrEmptyWhere` (no accidental whole-table update
+or delete; use `Get` to read everything), and a column that is not a plain
+identifier is rejected before any SQL runs. The context reaches the driver
+when the executor implements `QueryContext` / `ExecContext` (`*sql.DB`,
+`*sql.Tx`, `*sql.Conn` do); other executors keep working without it.
+
+The one-field methods remain and are equivalent to
+`...Context(context.Background(), model, crud.Eq(field, value), ...)`.
 
 ---
 

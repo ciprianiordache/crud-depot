@@ -1,6 +1,7 @@
 package crud
 
 import (
+	"context"
 	"fmt"
 	"reflect"
 	"strings"
@@ -14,7 +15,7 @@ func New(db Executor, dialect Dialect) *CRUD {
 	}
 }
 
-// WithTx returns a new CRUD instance that uses the gicen transaction.
+// WithTx returns a new CRUD instance that uses the given transaction.
 // The caller is responsible for Commit and Rollback.
 //
 // Example:
@@ -80,12 +81,45 @@ func (c *CRUD) RunInTx(db TxBeginner, fn func(tx *CRUD) error) (err error) {
 	return nil
 }
 
+// RunInTxContext is RunInTx with a context: the transaction is started
+// with BeginTx(ctx, nil), so cancelling ctx rolls it back.
+func (c *CRUD) RunInTxContext(ctx context.Context, db TxContextBeginner, fn func(tx *CRUD) error) (err error) {
+	sqlTx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("crud-depot: begin transaction: %w", err)
+	}
+
+	defer func() {
+		if p := recover(); p != nil {
+			_ = sqlTx.Rollback()
+			panic(p)
+		}
+	}()
+
+	if err = fn(c.WithTx(sqlTx)); err != nil {
+		_ = sqlTx.Rollback()
+		return fmt.Errorf("crud-depot: transaction rolled back: %w", err)
+	}
+
+	if err = sqlTx.Commit(); err != nil {
+		return fmt.Errorf("crud-depot: commit transaction: %w", err)
+	}
+
+	return nil
+}
+
 func (c *CRUD) Create(model any) (string, error) {
+	return c.CreateContext(context.Background(), model)
+}
+
+// CreateContext inserts model and returns its primary key.
+func (c *CRUD) CreateContext(ctx context.Context, model any) (string, error) {
 	table, err := getTableName(model)
 	if err != nil {
 		return "", err
 	}
 
+	db := c.ctxDB()
 	meta := getMeta(model)
 	val := reflect.ValueOf(model).Elem()
 	now := time.Now()
@@ -152,7 +186,7 @@ func (c *CRUD) Create(model any) (string, error) {
 	// auto-increment path — DB generates the ID
 	if meta.primaryKey != nil && meta.primaryKey.autoGen {
 		if c.dialect.UsesLastInsertID() {
-			result, err := c.db.Exec(query, args...)
+			result, err := db.ExecContext(ctx, query, args...)
 			if err != nil {
 				return "", opErr("Create", table, err)
 			}
@@ -164,14 +198,14 @@ func (c *CRUD) Create(model any) (string, error) {
 		}
 
 		var id string
-		if err = c.db.QueryRow(query, args...).Scan(&id); err != nil {
+		if err = db.QueryRowContext(ctx, query, args...).Scan(&id); err != nil {
 			return "", opErr("Create", table, err)
 		}
 		return id, nil
 	}
 
 	// uuid path — crud-depot generated the ID, just execute and return it
-	if _, err = c.db.Exec(query, args...); err != nil {
+	if _, err = db.ExecContext(ctx, query, args...); err != nil {
 		return "", opErr("Create", table, err)
 	}
 
@@ -184,6 +218,14 @@ func (c *CRUD) Create(model any) (string, error) {
 }
 
 func (c *CRUD) Update(model any, whereField string, whereValue any) error {
+	return c.UpdateContext(context.Background(), model, Eq(whereField, whereValue))
+}
+
+// UpdateContext writes every non-key field of model to the rows matching
+// where. It returns ErrNotFound when no row matches.
+//
+//	err := depot.UpdateContext(ctx, &unit, crud.Eq("organization_id", orgID).And("id", unit.ID))
+func (c *CRUD) UpdateContext(ctx context.Context, model any, where Where) error {
 	table, err := getTableName(model)
 	if err != nil {
 		return err
@@ -210,17 +252,19 @@ func (c *CRUD) Update(model any, whereField string, whereValue any) error {
 		sets = append(sets, fmt.Sprintf("%s = %s", f.column, c.dialect.Placeholder(len(args))))
 	}
 
-	args = append(args, whereValue)
+	cond, condArgs, err := where.clause(c.dialect, len(args))
+	if err != nil {
+		return opErr("Update", table, err)
+	}
 
 	query := fmt.Sprintf(
-		"UPDATE %s SET %s WHERE %s = %s",
+		"UPDATE %s SET %s WHERE %s",
 		table,
 		strings.Join(sets, ", "),
-		whereField,
-		c.dialect.Placeholder(len(args)),
+		cond,
 	)
 
-	result, err := c.db.Exec(query, args...)
+	result, err := c.ctxDB().ExecContext(ctx, query, append(args, condArgs...)...)
 	if err != nil {
 		return opErr("Update", table, err)
 	}
@@ -234,17 +278,25 @@ func (c *CRUD) Update(model any, whereField string, whereValue any) error {
 }
 
 func (c *CRUD) Read(model any, field string, value any, dest any) error {
+	return c.ReadContext(context.Background(), model, Eq(field, value), dest)
+}
+
+// ReadContext scans every row matching where into dest (a pointer to a
+// slice). It returns ErrNotFound when no row matches.
+func (c *CRUD) ReadContext(ctx context.Context, model any, where Where, dest any) error {
 	table, err := getTableName(model)
 	if err != nil {
 		return err
 	}
 
-	query := fmt.Sprintf(
-		"SELECT * FROM %s WHERE %s = %s",
-		table, field, c.dialect.Placeholder(1),
-	)
+	cond, args, err := where.clause(c.dialect, 0)
+	if err != nil {
+		return opErr("Read", table, err)
+	}
 
-	rows, err := c.db.Query(query, value)
+	query := fmt.Sprintf("SELECT * FROM %s WHERE %s", table, cond)
+
+	rows, err := c.ctxDB().QueryContext(ctx, query, args...)
 	if err != nil {
 		return opErr("Read", table, err)
 	}
@@ -274,27 +326,37 @@ func (c *CRUD) Read(model any, field string, value any, dest any) error {
 //	    // user does not exist
 //	}
 func (c *CRUD) ReadOne(model any, field string, value any, dest any) error {
+	return c.ReadOneContext(context.Background(), model, Eq(field, value), dest)
+}
+
+// ReadOneContext returns the first record matching where, or ErrNotFound.
+//
+//	var u unit.Unit
+//	err := depot.ReadOneContext(ctx, unit.Unit{}, crud.Eq("organization_id", orgID).And("id", id), &u)
+func (c *CRUD) ReadOneContext(ctx context.Context, model any, where Where, dest any) error {
 	table, err := getTableName(model)
 	if err != nil {
 		return err
 	}
-
-	query := fmt.Sprintf(
-		"SELECT * FROM %s WHERE %s = %s LIMIT 1",
-		table, field, c.dialect.Placeholder(1),
-	)
-
-	rows, err := c.db.Query(query, value)
-	if err != nil {
-		return opErr("ReadOne", table, err)
-	}
-	defer rows.Close()
 
 	// scan into a temporary slice then extract the first element
 	val := reflect.ValueOf(dest)
 	if val.Kind() != reflect.Ptr {
 		return opErr("ReadOne", table, fmt.Errorf("dest must be a pointer to a struct"))
 	}
+
+	cond, args, err := where.clause(c.dialect, 0)
+	if err != nil {
+		return opErr("ReadOne", table, err)
+	}
+
+	query := fmt.Sprintf("SELECT * FROM %s WHERE %s LIMIT 1", table, cond)
+
+	rows, err := c.ctxDB().QueryContext(ctx, query, args...)
+	if err != nil {
+		return opErr("ReadOne", table, err)
+	}
+	defer rows.Close()
 
 	elemType := val.Elem().Type()
 	slicePtr := reflect.New(reflect.SliceOf(elemType))
@@ -313,6 +375,11 @@ func (c *CRUD) ReadOne(model any, field string, value any, dest any) error {
 }
 
 func (c *CRUD) Get(model any, dest any, start, count int) error {
+	return c.GetContext(context.Background(), model, dest, start, count)
+}
+
+// GetContext reads count rows starting at start, in no particular order.
+func (c *CRUD) GetContext(ctx context.Context, model any, dest any, start, count int) error {
 	table, err := getTableName(model)
 	if err != nil {
 		return err
@@ -325,7 +392,7 @@ func (c *CRUD) Get(model any, dest any, start, count int) error {
 		c.dialect.Placeholder(2),
 	)
 
-	rows, err := c.db.Query(query, count, start)
+	rows, err := c.ctxDB().QueryContext(ctx, query, count, start)
 	if err != nil {
 		return opErr("Get", table, err)
 	}
@@ -338,21 +405,32 @@ func (c *CRUD) Get(model any, dest any, start, count int) error {
 }
 
 func (c *CRUD) Delete(model any, field string, value any) error {
+	return c.DeleteContext(context.Background(), model, Eq(field, value))
+}
+
+// DeleteContext deletes the rows matching where - or, for a SoftDeleter,
+// sets their soft-delete column to now. It returns ErrNotFound when no row
+// matches.
+func (c *CRUD) DeleteContext(ctx context.Context, model any, where Where) error {
 	table, err := getTableName(model)
 	if err != nil {
 		return err
 	}
+	db := c.ctxDB()
 
 	if sd, ok := model.(SoftDeleter); ok {
 		col := sd.SoftDeleteField()
+		cond, args, err := where.clause(c.dialect, 1)
+		if err != nil {
+			return opErr("Delete(soft)", table, err)
+		}
 		query := fmt.Sprintf(
-			"UPDATE %s SET %s = %s WHERE %s = %s",
+			"UPDATE %s SET %s = %s WHERE %s",
 			table, col,
 			c.dialect.Placeholder(1),
-			field,
-			c.dialect.Placeholder(2),
+			cond,
 		)
-		result, err := c.db.Exec(query, time.Now(), value)
+		result, err := db.ExecContext(ctx, query, append([]any{time.Now()}, args...)...)
 		if err != nil {
 			return opErr("Delete(soft)", table, err)
 		}
@@ -363,12 +441,13 @@ func (c *CRUD) Delete(model any, field string, value any) error {
 		return nil
 	}
 
-	query := fmt.Sprintf(
-		"DELETE FROM %s WHERE %s = %s",
-		table, field, c.dialect.Placeholder(1),
-	)
+	cond, args, err := where.clause(c.dialect, 0)
+	if err != nil {
+		return opErr("Delete", table, err)
+	}
+	query := fmt.Sprintf("DELETE FROM %s WHERE %s", table, cond)
 
-	result, err := c.db.Exec(query, value)
+	result, err := db.ExecContext(ctx, query, args...)
 	if err != nil {
 		return opErr("Delete", table, err)
 	}
